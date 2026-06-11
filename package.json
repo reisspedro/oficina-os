@@ -1,0 +1,18 @@
+{
+  "name": "oficina-os",
+  "version": "0.1.0",
+  "description": "Sistema de Ordem de Serviço, orçamentos e estoque para oficinas",
+  "main": "server.js",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "build": "cd client && npm install && npm run build",
+    "postinstall": "cd client && npm install"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^12.8.0",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2"
+  }
+}
