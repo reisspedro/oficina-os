@@ -1,5 +1,3 @@
-// OficinaOS — schema SQLite
-// "Tudo posso naquele que me fortalece." — Filipenses 4:13
 const Database = require('better-sqlite3');
 const path = require('path');
 

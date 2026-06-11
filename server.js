@@ -1,5 +1,3 @@
-// OficinaOS — API + frontend estático
-// "Toda obra do diligente certamente prospera." — Provérbios 13:4
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -13,7 +11,6 @@ const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-trocar-em-producao';
 
 app.use(express.json());
 
-// ---------- auth ----------
 function auth(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
@@ -52,7 +49,6 @@ app.post('/api/login', (req, res) => {
   res.json({ token, user: { id: user.id, name: user.name, shop_name: user.shop_name } });
 });
 
-// ---------- clientes ----------
 app.get('/api/clients', auth, (req, res) => {
   res.json(db.prepare('SELECT * FROM clients WHERE user_id = ? ORDER BY name').all(req.user.id));
 });
@@ -81,7 +77,6 @@ app.delete('/api/clients/:id', auth, (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- estoque ----------
 app.get('/api/parts', auth, (req, res) => {
   res.json(db.prepare('SELECT * FROM parts WHERE user_id = ? ORDER BY name').all(req.user.id));
 });
@@ -109,7 +104,6 @@ app.delete('/api/parts/:id', auth, (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- ordens de serviço ----------
 function osWithItems(os) {
   const items = db.prepare('SELECT * FROM os_items WHERE os_id = ?').all(os.id);
   const subtotal = items.reduce((s, i) => s + i.qty * i.unit_price, 0);
@@ -191,7 +185,7 @@ app.post('/api/os/:id/status', auth, (req, res) => {
   if (!FLOW.includes(status) && status !== 'cancelada') {
     return res.status(400).json({ error: 'Status inválido' });
   }
-  // baixa de estoque quando orçamento vira aprovada (uma vez só)
+
   if (status === 'aprovada' && os.status === 'orcamento') {
     const items = db.prepare('SELECT * FROM os_items WHERE os_id=? AND part_id IS NOT NULL').all(os.id);
     const dec = db.prepare('UPDATE parts SET qty = qty - ? WHERE id=? AND user_id=?');
@@ -209,7 +203,6 @@ app.delete('/api/os/:id', auth, (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- orçamento público (link WhatsApp) ----------
 app.get('/api/public/os/:token', (req, res) => {
   const os = db.prepare('SELECT * FROM service_orders WHERE share_token=?').get(req.params.token);
   if (!os) return res.status(404).json({ error: 'Orçamento não encontrado' });
@@ -217,7 +210,6 @@ app.get('/api/public/os/:token', (req, res) => {
   res.json({ ...osWithItems(os), shop });
 });
 
-// ---------- dashboard ----------
 app.get('/api/dashboard', auth, (req, res) => {
   const counts = {};
   for (const s of [...FLOW, 'cancelada']) {
@@ -235,7 +227,6 @@ app.get('/api/dashboard', auth, (req, res) => {
   res.json({ counts, revenue_month: revenue, delivered_month: delivered.length, low_stock: lowStock });
 });
 
-// ---------- frontend ----------
 const dist = path.join(__dirname, 'client', 'dist');
 app.use(express.static(dist));
 app.get(/^(?!\/api).*/, (req, res) => res.sendFile(path.join(dist, 'index.html')));

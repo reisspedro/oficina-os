@@ -101,7 +101,6 @@ button:disabled { opacity: 0.6; cursor: wait; }
 
 .actions-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 
-/* página pública de orçamento — clara, pra impressão */
 .print-page {
   max-width: 720px; margin: 0 auto; padding: 32px 24px;
   background: #fff; color: #111; min-height: 100vh; font-family: system-ui, sans-serif;
