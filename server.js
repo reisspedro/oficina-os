@@ -8,8 +8,52 @@ const db = require('./db');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-trocar-em-producao';
+if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+  console.error('JWT_SECRET é obrigatório em produção — defina a variável de ambiente.');
+  process.exit(1);
+}
 
 app.use(express.json());
+
+const authAttempts = new Map();
+function rateLimit(req, res, next) {
+  const now = Date.now();
+  const rec = authAttempts.get(req.ip) || { count: 0, start: now };
+  if (now - rec.start > 15 * 60 * 1000) { rec.count = 0; rec.start = now; }
+  rec.count++;
+  authAttempts.set(req.ip, rec);
+  if (rec.count > 20) return res.status(429).json({ error: 'Muitas tentativas — aguarde 15 minutos' });
+  next();
+}
+
+function money(v, fallback = 0) {
+  const n = v === undefined || v === null || v === '' ? fallback : Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+function validItems(userId, items) {
+  const out = [];
+  for (const it of items) {
+    if (!it.description) continue;
+    const qty = Number(it.qty ?? 1);
+    const price = money(it.unit_price);
+    if (!Number.isFinite(qty) || qty <= 0 || price === null) return { error: 'Itens com quantidade ou preço inválidos' };
+    let partId = null;
+    if (it.part_id) {
+      const part = db.prepare('SELECT id FROM parts WHERE id=? AND user_id=?').get(it.part_id, userId);
+      if (!part) return { error: 'Peça inválida' };
+      partId = part.id;
+    }
+    out.push({ part_id: partId, type: it.type === 'peca' ? 'peca' : 'servico', description: it.description, qty, unit_price: price });
+  }
+  return { items: out };
+}
+
+function ownedClientId(userId, clientId) {
+  if (!clientId) return { id: null };
+  const c = db.prepare('SELECT id FROM clients WHERE id=? AND user_id=?').get(clientId, userId);
+  return c ? { id: c.id } : { error: 'Cliente inválido' };
+}
 
 function auth(req, res, next) {
   const header = req.headers.authorization || '';
@@ -23,7 +67,7 @@ function auth(req, res, next) {
   }
 }
 
-app.post('/api/register', (req, res) => {
+app.post('/api/register', rateLimit, (req, res) => {
   const { name, email, password, shop_name, shop_phone } = req.body || {};
   if (!name || !email || !password || !shop_name) {
     return res.status(400).json({ error: 'Preencha nome, e-mail, senha e nome da oficina' });
@@ -39,7 +83,7 @@ app.post('/api/register', (req, res) => {
   res.json({ token, user: { id: info.lastInsertRowid, name, shop_name } });
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', rateLimit, (req, res) => {
   const { email, password } = req.body || {};
   const user = db.prepare('SELECT * FROM users WHERE email = ?').get((email || '').toLowerCase());
   if (!user || !bcrypt.compareSync(password || '', user.password_hash)) {
@@ -82,24 +126,33 @@ app.get('/api/parts', auth, (req, res) => {
 });
 
 app.post('/api/parts', auth, (req, res) => {
-  const { name, qty, min_qty, cost_price, sale_price } = req.body || {};
+  const { name } = req.body || {};
   if (!name) return res.status(400).json({ error: 'Nome é obrigatório' });
+  const vals = [money(req.body.qty), money(req.body.min_qty), money(req.body.cost_price), money(req.body.sale_price)];
+  if (vals.some((v) => v === null)) return res.status(400).json({ error: 'Valores não podem ser negativos' });
   const info = db.prepare(
     'INSERT INTO parts (user_id, name, qty, min_qty, cost_price, sale_price) VALUES (?,?,?,?,?,?)'
-  ).run(req.user.id, name, qty || 0, min_qty || 0, cost_price || 0, sale_price || 0);
+  ).run(req.user.id, name, ...vals);
   res.json(db.prepare('SELECT * FROM parts WHERE id = ?').get(info.lastInsertRowid));
 });
 
 app.put('/api/parts/:id', auth, (req, res) => {
-  const { name, qty, min_qty, cost_price, sale_price } = req.body || {};
+  const { name } = req.body || {};
+  const vals = [money(req.body.qty), money(req.body.min_qty), money(req.body.cost_price), money(req.body.sale_price)];
+  if (vals.some((v) => v === null)) return res.status(400).json({ error: 'Valores não podem ser negativos' });
   const r = db.prepare(
     'UPDATE parts SET name=?, qty=?, min_qty=?, cost_price=?, sale_price=? WHERE id=? AND user_id=?'
-  ).run(name, qty || 0, min_qty || 0, cost_price || 0, sale_price || 0, req.params.id, req.user.id);
+  ).run(name, ...vals, req.params.id, req.user.id);
   if (!r.changes) return res.status(404).json({ error: 'Peça não encontrada' });
   res.json(db.prepare('SELECT * FROM parts WHERE id = ?').get(req.params.id));
 });
 
 app.delete('/api/parts/:id', auth, (req, res) => {
+  const used = db.prepare(
+    `SELECT oi.id FROM os_items oi JOIN service_orders so ON so.id = oi.os_id
+     WHERE oi.part_id=? AND so.user_id=? LIMIT 1`
+  ).get(req.params.id, req.user.id);
+  if (used) return res.status(409).json({ error: 'Peça usada em OS — não pode excluir' });
   db.prepare('DELETE FROM parts WHERE id=? AND user_id=?').run(req.params.id, req.user.id);
   res.json({ ok: true });
 });
@@ -108,21 +161,23 @@ function osWithItems(os) {
   const items = db.prepare('SELECT * FROM os_items WHERE os_id = ?').all(os.id);
   const subtotal = items.reduce((s, i) => s + i.qty * i.unit_price, 0);
   const client = os.client_id
-    ? db.prepare('SELECT id, name, phone FROM clients WHERE id = ?').get(os.client_id)
+    ? db.prepare('SELECT id, name, phone FROM clients WHERE id = ? AND user_id = ?').get(os.client_id, os.user_id)
     : null;
   return { ...os, items, client, subtotal, total: Math.max(0, subtotal - os.discount) };
 }
 
 app.get('/api/os', auth, (req, res) => {
-  const { status } = req.query;
-  let rows;
-  if (status) {
-    rows = db.prepare('SELECT * FROM service_orders WHERE user_id=? AND status=? ORDER BY id DESC')
-      .all(req.user.id, status);
-  } else {
-    rows = db.prepare('SELECT * FROM service_orders WHERE user_id=? ORDER BY id DESC').all(req.user.id);
+  const { status, q } = req.query;
+  let sql = 'SELECT so.* FROM service_orders so LEFT JOIN clients c ON c.id = so.client_id WHERE so.user_id=?';
+  const params = [req.user.id];
+  if (status) { sql += ' AND so.status=?'; params.push(status); }
+  if (q) {
+    sql += ' AND (so.plate LIKE ? OR so.vehicle LIKE ? OR so.description LIKE ? OR c.name LIKE ? OR so.id = ?)';
+    const like = `%${q}%`;
+    params.push(like, like, like, like, Number(q) || 0);
   }
-  res.json(rows.map(osWithItems));
+  sql += ' ORDER BY so.id DESC';
+  res.json(db.prepare(sql).all(...params).map(osWithItems));
 });
 
 app.get('/api/os/:id', auth, (req, res) => {
@@ -132,22 +187,31 @@ app.get('/api/os/:id', auth, (req, res) => {
   res.json(osWithItems(os));
 });
 
-app.post('/api/os', auth, (req, res) => {
-  const { client_id, vehicle, plate, description, discount, items } = req.body || {};
-  const token = crypto.randomBytes(12).toString('hex');
+const insertItem = db.prepare(
+  'INSERT INTO os_items (os_id, part_id, type, description, qty, unit_price) VALUES (?,?,?,?,?,?)'
+);
+
+const createOsTx = db.transaction((userId, os, items) => {
   const info = db.prepare(
     `INSERT INTO service_orders (user_id, client_id, vehicle, plate, description, discount, share_token)
      VALUES (?,?,?,?,?,?,?)`
-  ).run(req.user.id, client_id || null, vehicle || '', plate || '', description || '', discount || 0, token);
-  const osId = info.lastInsertRowid;
-  const insertItem = db.prepare(
-    'INSERT INTO os_items (os_id, part_id, type, description, qty, unit_price) VALUES (?,?,?,?,?,?)'
-  );
-  for (const it of items || []) {
-    if (!it.description) continue;
-    insertItem.run(osId, it.part_id || null, it.type === 'peca' ? 'peca' : 'servico',
-      it.description, it.qty || 1, it.unit_price || 0);
-  }
+  ).run(userId, os.client_id, os.vehicle, os.plate, os.description, os.discount, os.share_token);
+  for (const it of items) insertItem.run(info.lastInsertRowid, it.part_id, it.type, it.description, it.qty, it.unit_price);
+  return info.lastInsertRowid;
+});
+
+app.post('/api/os', auth, (req, res) => {
+  const { client_id, vehicle, plate, description, discount, items } = req.body || {};
+  const cli = ownedClientId(req.user.id, client_id);
+  if (cli.error) return res.status(400).json({ error: cli.error });
+  const disc = money(discount);
+  if (disc === null) return res.status(400).json({ error: 'Desconto não pode ser negativo' });
+  const val = validItems(req.user.id, items || []);
+  if (val.error) return res.status(400).json({ error: val.error });
+  const osId = createOsTx(req.user.id, {
+    client_id: cli.id, vehicle: vehicle || '', plate: plate || '', description: description || '',
+    discount: disc, share_token: crypto.randomBytes(12).toString('hex'),
+  }, val.items);
   res.json(osWithItems(db.prepare('SELECT * FROM service_orders WHERE id=?').get(osId)));
 });
 
@@ -156,22 +220,28 @@ app.put('/api/os/:id', auth, (req, res) => {
     .get(req.params.id, req.user.id);
   if (!os) return res.status(404).json({ error: 'OS não encontrada' });
   const { client_id, vehicle, plate, description, discount, items } = req.body || {};
-  db.prepare(
-    `UPDATE service_orders SET client_id=?, vehicle=?, plate=?, description=?, discount=?,
-     updated_at=datetime('now') WHERE id=?`
-  ).run(client_id ?? os.client_id, vehicle ?? os.vehicle, plate ?? os.plate,
-    description ?? os.description, discount ?? os.discount, os.id);
-  if (Array.isArray(items)) {
-    db.prepare('DELETE FROM os_items WHERE os_id=?').run(os.id);
-    const insertItem = db.prepare(
-      'INSERT INTO os_items (os_id, part_id, type, description, qty, unit_price) VALUES (?,?,?,?,?,?)'
-    );
-    for (const it of items) {
-      if (!it.description) continue;
-      insertItem.run(os.id, it.part_id || null, it.type === 'peca' ? 'peca' : 'servico',
-        it.description, it.qty || 1, it.unit_price || 0);
-    }
+  if (Array.isArray(items) && os.status !== 'orcamento') {
+    return res.status(409).json({ error: 'Itens só podem ser alterados com a OS em orçamento — volte o status primeiro' });
   }
+  const cli = client_id !== undefined ? ownedClientId(req.user.id, client_id) : { id: os.client_id };
+  if (cli.error) return res.status(400).json({ error: cli.error });
+  const disc = discount !== undefined ? money(discount) : os.discount;
+  if (disc === null) return res.status(400).json({ error: 'Desconto não pode ser negativo' });
+  let val = null;
+  if (Array.isArray(items)) {
+    val = validItems(req.user.id, items);
+    if (val.error) return res.status(400).json({ error: val.error });
+  }
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE service_orders SET client_id=?, vehicle=?, plate=?, description=?, discount=?,
+       updated_at=datetime('now') WHERE id=?`
+    ).run(cli.id, vehicle ?? os.vehicle, plate ?? os.plate, description ?? os.description, disc, os.id);
+    if (val) {
+      db.prepare('DELETE FROM os_items WHERE os_id=?').run(os.id);
+      for (const it of val.items) insertItem.run(os.id, it.part_id, it.type, it.description, it.qty, it.unit_price);
+    }
+  })();
   res.json(osWithItems(db.prepare('SELECT * FROM service_orders WHERE id=?').get(os.id)));
 });
 
@@ -186,20 +256,50 @@ app.post('/api/os/:id/status', auth, (req, res) => {
     return res.status(400).json({ error: 'Status inválido' });
   }
 
-  if (status === 'aprovada' && os.status === 'orcamento') {
-    const items = db.prepare('SELECT * FROM os_items WHERE os_id=? AND part_id IS NOT NULL').all(os.id);
-    const dec = db.prepare('UPDATE parts SET qty = qty - ? WHERE id=? AND user_id=?');
-    for (const it of items) dec.run(it.qty, it.part_id, req.user.id);
+  setStatusTx(os, status);
+  res.json(osWithItems(db.prepare('SELECT * FROM service_orders WHERE id=?').get(os.id)));
+});
+
+function moveStock(os, sign) {
+  const items = db.prepare('SELECT * FROM os_items WHERE os_id=? AND part_id IS NOT NULL').all(os.id);
+  const upd = db.prepare(`UPDATE parts SET qty = qty ${sign} ? WHERE id=? AND user_id=?`);
+  for (const it of items) upd.run(it.qty, it.part_id, os.user_id);
+}
+
+const setStatusTx = db.transaction((os, status) => {
+  const deductNow = ['aprovada', 'em_execucao', 'pronta', 'entregue'].includes(status);
+  if (deductNow && !os.stock_deducted) {
+    moveStock(os, '-');
+    db.prepare('UPDATE service_orders SET stock_deducted=1 WHERE id=?').run(os.id);
+  }
+  if (!deductNow && os.stock_deducted) {
+    moveStock(os, '+');
+    db.prepare('UPDATE service_orders SET stock_deducted=0 WHERE id=?').run(os.id);
   }
   db.prepare(
     `UPDATE service_orders SET status=?, updated_at=datetime('now'),
      delivered_at = CASE WHEN ?='entregue' THEN datetime('now') ELSE delivered_at END WHERE id=?`
   ).run(status, status, os.id);
+});
+
+app.post('/api/os/:id/pay', auth, (req, res) => {
+  const os = db.prepare('SELECT * FROM service_orders WHERE id=? AND user_id=?')
+    .get(req.params.id, req.user.id);
+  if (!os) return res.status(404).json({ error: 'OS não encontrada' });
+  const paid = !!(req.body || {}).paid;
+  db.prepare(`UPDATE service_orders SET paid_at = CASE WHEN ? THEN datetime('now') ELSE NULL END,
+    updated_at=datetime('now') WHERE id=?`).run(paid ? 1 : 0, os.id);
   res.json(osWithItems(db.prepare('SELECT * FROM service_orders WHERE id=?').get(os.id)));
 });
 
 app.delete('/api/os/:id', auth, (req, res) => {
-  db.prepare('DELETE FROM service_orders WHERE id=? AND user_id=?').run(req.params.id, req.user.id);
+  const os = db.prepare('SELECT * FROM service_orders WHERE id=? AND user_id=?')
+    .get(req.params.id, req.user.id);
+  if (!os) return res.status(404).json({ error: 'OS não encontrada' });
+  db.transaction(() => {
+    if (os.stock_deducted) moveStock(os, '+');
+    db.prepare('DELETE FROM service_orders WHERE id=?').run(os.id);
+  })();
   res.json({ ok: true });
 });
 
@@ -207,7 +307,15 @@ app.get('/api/public/os/:token', (req, res) => {
   const os = db.prepare('SELECT * FROM service_orders WHERE share_token=?').get(req.params.token);
   if (!os) return res.status(404).json({ error: 'Orçamento não encontrado' });
   const shop = db.prepare('SELECT shop_name, shop_phone FROM users WHERE id=?').get(os.user_id);
-  res.json({ ...osWithItems(os), shop });
+  const full = osWithItems(os);
+  res.json({
+    id: full.id, status: full.status, vehicle: full.vehicle, plate: full.plate,
+    description: full.description, created_at: full.created_at, discount: full.discount,
+    subtotal: full.subtotal, total: full.total,
+    client: full.client ? { name: full.client.name } : null,
+    items: full.items.map(({ id, type, description, qty, unit_price }) => ({ id, type, description, qty, unit_price })),
+    shop,
+  });
 });
 
 app.get('/api/dashboard', auth, (req, res) => {
@@ -224,7 +332,14 @@ app.get('/api/dashboard', auth, (req, res) => {
   const lowStock = db.prepare(
     'SELECT * FROM parts WHERE user_id=? AND qty <= min_qty AND min_qty > 0 ORDER BY name'
   ).all(req.user.id);
-  res.json({ counts, revenue_month: revenue, delivered_month: delivered.length, low_stock: lowStock });
+  const unpaid = db.prepare(
+    `SELECT * FROM service_orders WHERE user_id=? AND status='entregue' AND paid_at IS NULL`
+  ).all(req.user.id);
+  const toReceive = unpaid.reduce((s, os) => s + osWithItems(os).total, 0);
+  res.json({
+    counts, revenue_month: revenue, delivered_month: delivered.length, low_stock: lowStock,
+    to_receive: toReceive, unpaid_count: unpaid.length,
+  });
 });
 
 const dist = path.join(__dirname, 'client', 'dist');

@@ -11,6 +11,7 @@ export default function OSForm() {
   const [parts, setParts] = useState([]);
   const [form, setForm] = useState({ client_id: '', vehicle: '', plate: '', description: '', discount: 0 });
   const [items, setItems] = useState([{ ...EMPTY_ITEM }]);
+  const [locked, setLocked] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -24,6 +25,7 @@ export default function OSForm() {
           description: os.description, discount: os.discount,
         });
         setItems(os.items.length ? os.items : [{ ...EMPTY_ITEM }]);
+        setLocked(os.status !== 'orcamento');
       }).catch((e) => setError(e.message));
     }
   }, [id]);
@@ -50,14 +52,17 @@ export default function OSForm() {
     e.preventDefault();
     setError('');
     setBusy(true);
-    const body = JSON.stringify({
+    const payload = {
       ...form,
       client_id: form.client_id ? Number(form.client_id) : null,
       discount: Number(form.discount) || 0,
-      items: items
+    };
+    if (!locked) {
+      payload.items = items
         .filter((it) => it.description)
-        .map((it) => ({ ...it, qty: Number(it.qty) || 1, unit_price: Number(it.unit_price) || 0 })),
-    });
+        .map((it) => ({ ...it, qty: Number(it.qty) || 1, unit_price: Number(it.unit_price) || 0 }));
+    }
+    const body = JSON.stringify(payload);
     try {
       const os = id
         ? await api(`/api/os/${id}`, { method: 'PUT', body })
@@ -90,7 +95,12 @@ export default function OSForm() {
         </label>
 
         <h3>Itens</h3>
-        {items.map((it, i) => (
+        {locked && (
+          <p className="muted">
+            🔒 Itens travados — a OS já foi aprovada. Volte pra orçamento na tela da OS pra alterar itens.
+          </p>
+        )}
+        {!locked && items.map((it, i) => (
           <div className="item-row" key={i}>
             <select value={it.part_id || ''} onChange={(e) => pickPart(i, e.target.value)} title="Puxar do estoque">
               <option value="">manual</option>
@@ -111,9 +121,11 @@ export default function OSForm() {
               onClick={() => setItems(items.filter((_, idx) => idx !== i))}>✕</button>
           </div>
         ))}
-        <button type="button" className="link-btn" onClick={() => setItems([...items, { ...EMPTY_ITEM }])}>
-          + adicionar item
-        </button>
+        {!locked && (
+          <button type="button" className="link-btn" onClick={() => setItems([...items, { ...EMPTY_ITEM }])}>
+            + adicionar item
+          </button>
+        )}
 
         <div className="totals">
           <span>Subtotal: <b>{fmt(subtotal)}</b></span>

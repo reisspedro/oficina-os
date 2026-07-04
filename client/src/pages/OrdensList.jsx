@@ -6,12 +6,19 @@ export default function OrdensList() {
   const [list, setList] = useState([]);
   const [error, setError] = useState('');
   const [params, setParams] = useSearchParams();
+  const [q, setQ] = useState('');
   const status = params.get('status') || '';
 
   useEffect(() => {
-    api(`/api/os${status ? `?status=${status}` : ''}`)
-      .then(setList).catch((e) => setError(e.message));
-  }, [status]);
+    const query = new URLSearchParams();
+    if (status) query.set('status', status);
+    if (q) query.set('q', q);
+    const t = setTimeout(() => {
+      api(`/api/os${query.toString() ? `?${query}` : ''}`)
+        .then(setList).catch((e) => setError(e.message));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [status, q]);
 
   return (
     <div>
@@ -26,6 +33,8 @@ export default function OrdensList() {
           <button key={k} className={`chip ${status === k ? 'active' : ''}`}
             onClick={() => setParams({ status: k })}>{label}</button>
         ))}
+        <input className="search" placeholder="🔍 placa, cliente, veículo…"
+          value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
       {error && <p className="error">{error}</p>}
 

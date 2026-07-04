@@ -82,6 +82,7 @@ button:disabled { opacity: 0.6; cursor: wait; }
   border-radius: 20px; padding: 5px 14px; font-weight: 500;
 }
 .chip.active { border-color: var(--accent); color: var(--text); }
+.filters .search { width: auto; flex: 1; min-width: 180px; max-width: 320px; margin-left: auto; }
 
 .badge { font-size: 0.75rem; padding: 3px 10px; border-radius: 12px; font-weight: 600; }
 .st-orcamento { background: #3b2f00; color: #d29922; }

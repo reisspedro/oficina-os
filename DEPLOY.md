@@ -1,47 +1,74 @@
-# Deploy do OficinaOS — guia pronto pra quando precisar
+# Deploy do OficinaOS
 
-> Status: projeto engavetado em 06/2026 (patrão recusou). MVP funcional e testado.
-> Quando aparecer interessado, seguir este guia — 1h até estar no ar.
+Guia de implantação em produção para o OficinaOS.
 
-## 1. Repo no GitHub (PRIVADO — lembrar do incidente de 12/05)
+## 1. Repositório no GitHub
+
+Recomenda-se manter o repositório como privado durante o desenvolvimento inicial.
 
 ```bash
-# opção A — com GitHub CLI (instalar: winget install GitHub.cli)
+# Opção A — GitHub CLI
 gh auth login
-cd C:\Users\phspi\oficina-os
 gh repo create oficina-os --private --source=. --push
 
-# opção B — manual
-# 1. github.com/new → nome "oficina-os" → Private → criar SEM readme
-# 2. depois:
-cd C:\Users\phspi\oficina-os
+# Opção B — manual
+# 1. Acesse github.com/new
+# 2. Crie o repositório "oficina-os" como Private (sem README)
+# 3. Execute:
 git remote add origin https://github.com/SEU_USUARIO/oficina-os.git
 git push -u origin master
 ```
 
-**Checagem antes do push:** `.gitignore` já exclui `data/`, `.env` e `*.db`. Nunca commitar JWT_SECRET.
+**Verificações antes do push:**
+- `.gitignore` já exclui `data/`, `.env` e `*.db`.
+- Nunca commite `JWT_SECRET` ou arquivos de banco de dados.
 
-## 2. Deploy no Railway (~US$5/mês)
+## 2. Deploy no Railway
 
-1. railway.app → login com GitHub → New Project → Deploy from GitHub repo → `oficina-os`
-2. Ele detecta Node. Conferir em Settings:
+1. Acesse railway.app e faça login com GitHub.
+2. Crie um novo projeto e selecione "Deploy from GitHub repo".
+3. Selecione o repositório `oficina-os`.
+4. Em Settings, confirme:
    - Build command: `npm run build`
    - Start command: `npm start`
-3. **Variables**: `JWT_SECRET` = string aleatória de 64+ chars (gerar: `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`)
-   e `DB_PATH` = `/data/oficina.db`
-4. **Volume**: add volume montado em `/data` (1GB basta) — sem isso o banco morre a cada deploy
-5. Settings → Networking → Generate Domain → pronto, URL pública
+5. Adicione as variáveis de ambiente:
+   - `JWT_SECRET`: string aleatória de 64+ caracteres (gere com `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`)
+   - `DB_PATH`: `/data/oficina.db`
+6. Adicione um volume persistente montado em `/data` (1 GB é suficiente).
+7. Em Networking, gere um domínio público.
 
-## 3. Alternativa VPS (mais barato em escala: ~R$25/mês fixo p/ N clientes)
+**Importante:** `JWT_SECRET` é obrigatório em produção. Quando `NODE_ENV=production`, o servidor recusa iniciar se a variável não estiver definida.
 
-Hostinger/Contabo VPS Ubuntu → instalar Node 22+ → clonar repo → `npm install && npm run build` →
-`pm2 start server.js --name oficina-os` → `pm2 save && pm2 startup` → Caddy/nginx na frente com HTTPS.
+## 3. Alternativa VPS
 
-## 4. Cobrança sem código
+Para escala com custo fixo mais baixo (~R$25/mês):
 
-Mercado Pago → Assinaturas → criar plano (R$49/59/79 mensal) → mandar link pro cliente.
-Inadimplência se gerencia manual até ter 5+ clientes.
+- Use VPS Ubuntu (Hostinger, Contabo ou similar).
+- Instale Node.js 22+.
+- Clone o repositório e execute `npm install && npm run build`.
+- Inicie com `pm2 start server.js --name oficina-os`.
+- Execute `pm2 save && pm2 startup`.
+- Coloque Caddy ou nginx na frente para HTTPS.
 
-## 5. Backup (fazer ANTES do primeiro cliente pagar)
+## 4. Cobrança via Mercado Pago (assinaturas)
 
-Cron diário copiando `/data/oficina.db` pra outro lugar (Railway: usar litestream com R2/B2 grátis).
+1. No Mercado Pago, acesse Assinaturas e crie planos (ex.: R$49, R$59 e R$79 mensais).
+2. Envie o link de assinatura diretamente para o cliente.
+3. Gerencie inadimplência manualmente até atingir volume maior (5+ clientes).
+
+## 5. Backup do SQLite
+
+Configure backup diário do banco de dados antes de receber o primeiro cliente pagante.
+
+- Railway: use Litestream com armazenamento em R2 ou Backblaze B2 (camada gratuita disponível).
+- VPS: cron job copiando o arquivo do banco para local externo ou object storage.
+
+## Checklist pré-go-live
+
+- [ ] Backup testado e restaurável
+- [ ] `JWT_SECRET` forte (64+ caracteres) definido
+- [ ] Volume persistente montado corretamente em `/data`
+- [ ] `DB_PATH` apontando para o volume persistente
+- [ ] Domínio configurado e acessível
+- [ ] `NODE_ENV=production` definido
+- [ ] Teste de fluxo completo (criação de OS, aprovação, baixa de estoque, pagamento)

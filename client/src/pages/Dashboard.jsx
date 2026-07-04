@@ -25,6 +25,12 @@ export default function Dashboard() {
           <span className="stat-num">{fmt(data.revenue_month)}</span>
           <span className="muted">Faturado no mês ({data.delivered_month} OS entregues)</span>
         </div>
+        {data.unpaid_count > 0 && (
+          <Link to="/os?status=entregue" className="card stat">
+            <span className="stat-num">{fmt(data.to_receive)}</span>
+            <span className="muted">A receber ({data.unpaid_count} OS entregues sem pagamento)</span>
+          </Link>
+        )}
         {['orcamento', 'aprovada', 'em_execucao', 'pronta'].map((s) => (
           <Link key={s} to={`/os?status=${s}`} className="card stat">
             <span className="stat-num">{data.counts[s]}</span>

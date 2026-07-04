@@ -30,6 +30,12 @@ export default function OSDetalhe() {
     } catch (err) { setError(err.message); }
   }
 
+  async function togglePaid() {
+    try {
+      setOs(await api(`/api/os/${id}/pay`, { method: 'POST', body: JSON.stringify({ paid: !os.paid_at }) }));
+    } catch (err) { setError(err.message); }
+  }
+
   async function remove() {
     if (!confirm('Excluir esta OS? Não tem volta.')) return;
     await api(`/api/os/${id}`, { method: 'DELETE' });
@@ -50,7 +56,14 @@ export default function OSDetalhe() {
   return (
     <div>
       <div className="page-head">
-        <h2>OS-{os.id} <span className={`badge st-${os.status}`}>{STATUS_LABELS[os.status]}</span></h2>
+        <h2>
+          OS-{os.id} <span className={`badge st-${os.status}`}>{STATUS_LABELS[os.status]}</span>
+          {os.status === 'entregue' && (
+            <span className={`badge ${os.paid_at ? 'st-entregue' : 'st-cancelada'}`}>
+              {os.paid_at ? '✓ Pago' : '$ A receber'}
+            </span>
+          )}
+        </h2>
         <div>
           <Link className="btn ghost" to={`/os/${os.id}/editar`}>Editar</Link>{' '}
           <a className="btn ghost" href={shareUrl} target="_blank" rel="noreferrer">🖨️ Imprimir</a>{' '}
@@ -89,6 +102,14 @@ export default function OSDetalhe() {
         {NEXT[os.status] && (
           <button className="btn" onClick={() => setStatus(NEXT[os.status])}>
             {NEXT_LABEL[os.status]}
+          </button>
+        )}
+        {os.status === 'aprovada' && (
+          <button className="btn ghost" onClick={() => setStatus('orcamento')}>↩️ Voltar pra orçamento</button>
+        )}
+        {os.status === 'entregue' && (
+          <button className="btn ghost" onClick={togglePaid}>
+            {os.paid_at ? '↩️ Desfazer pagamento' : '💰 Marcar como pago'}
           </button>
         )}
         {os.status !== 'cancelada' && os.status !== 'entregue' && (

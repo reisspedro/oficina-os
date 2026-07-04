@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS service_orders (
     CHECK (status IN ('orcamento','aprovada','em_execucao','pronta','entregue','cancelada')),
   discount REAL NOT NULL DEFAULT 0,
   share_token TEXT UNIQUE,
+  stock_deducted INTEGER NOT NULL DEFAULT 0,
+  paid_at TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   delivered_at TEXT
@@ -72,5 +74,9 @@ CREATE INDEX IF NOT EXISTS idx_items_os ON os_items(os_id);
 CREATE INDEX IF NOT EXISTS idx_clients_user ON clients(user_id);
 CREATE INDEX IF NOT EXISTS idx_parts_user ON parts(user_id);
 `);
+
+for (const col of ['stock_deducted INTEGER NOT NULL DEFAULT 0', 'paid_at TEXT']) {
+  try { db.exec(`ALTER TABLE service_orders ADD COLUMN ${col}`); } catch {}
+}
 
 module.exports = db;
