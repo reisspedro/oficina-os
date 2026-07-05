@@ -107,6 +107,7 @@ app.post('/api/clients', auth, (req, res) => {
 
 app.put('/api/clients/:id', auth, (req, res) => {
   const { name, phone, notes } = req.body || {};
+  if (!name) return res.status(400).json({ error: 'Nome é obrigatório' });
   const r = db.prepare('UPDATE clients SET name=?, phone=?, notes=? WHERE id=? AND user_id=?')
     .run(name, phone || '', notes || '', req.params.id, req.user.id);
   if (!r.changes) return res.status(404).json({ error: 'Cliente não encontrado' });
@@ -137,13 +138,18 @@ app.post('/api/parts', auth, (req, res) => {
 });
 
 app.put('/api/parts/:id', auth, (req, res) => {
-  const { name } = req.body || {};
-  const vals = [money(req.body.qty), money(req.body.min_qty), money(req.body.cost_price), money(req.body.sale_price)];
+  const cur = db.prepare('SELECT * FROM parts WHERE id=? AND user_id=?').get(req.params.id, req.user.id);
+  if (!cur) return res.status(404).json({ error: 'Peça não encontrada' });
+  const name = req.body?.name ?? cur.name;
+  if (!name) return res.status(400).json({ error: 'Nome é obrigatório' });
+  const vals = [
+    money(req.body.qty, cur.qty), money(req.body.min_qty, cur.min_qty),
+    money(req.body.cost_price, cur.cost_price), money(req.body.sale_price, cur.sale_price),
+  ];
   if (vals.some((v) => v === null)) return res.status(400).json({ error: 'Valores não podem ser negativos' });
-  const r = db.prepare(
+  db.prepare(
     'UPDATE parts SET name=?, qty=?, min_qty=?, cost_price=?, sale_price=? WHERE id=? AND user_id=?'
   ).run(name, ...vals, req.params.id, req.user.id);
-  if (!r.changes) return res.status(404).json({ error: 'Peça não encontrada' });
   res.json(db.prepare('SELECT * FROM parts WHERE id = ?').get(req.params.id));
 });
 
@@ -256,12 +262,27 @@ app.post('/api/os/:id/status', auth, (req, res) => {
     return res.status(400).json({ error: 'Status inválido' });
   }
 
-  setStatusTx(os, status);
+  try {
+    setStatusTx(os, status);
+  } catch (e) {
+    if (e.stock) return res.status(409).json({ error: e.message });
+    throw e;
+  }
   res.json(osWithItems(db.prepare('SELECT * FROM service_orders WHERE id=?').get(os.id)));
 });
 
 function moveStock(os, sign) {
   const items = db.prepare('SELECT * FROM os_items WHERE os_id=? AND part_id IS NOT NULL').all(os.id);
+  if (sign === '-') {
+    for (const it of items) {
+      const part = db.prepare('SELECT name, qty FROM parts WHERE id=? AND user_id=?').get(it.part_id, os.user_id);
+      if (part && part.qty < it.qty) {
+        const err = new Error(`Estoque insuficiente de "${part.name}" — tem ${part.qty}, a OS pede ${it.qty}`);
+        err.stock = true;
+        throw err;
+      }
+    }
+  }
   const upd = db.prepare(`UPDATE parts SET qty = qty ${sign} ? WHERE id=? AND user_id=?`);
   for (const it of items) upd.run(it.qty, it.part_id, os.user_id);
 }
